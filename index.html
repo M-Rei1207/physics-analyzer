@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>物理動画解析ミニアプリ</title>
+  <style>
+    :root{--bg:#f6f7fb;--card:#fff;--line:#d9deea;--text:#202534;--muted:#687086;--accent:#2f6fed;--warn:#b35a00;--good:#1b7f3a;}
+    *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+    header{padding:16px 20px;background:#172033;color:white} header h1{font-size:20px;margin:0 0 4px} header p{margin:0;color:#cbd3e6;font-size:13px}
+    main{display:grid;grid-template-columns:minmax(440px,1.15fr) minmax(360px,.85fr);gap:14px;padding:14px;}
+    section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;box-shadow:0 1px 3px #0001}
+    h2{font-size:16px;margin:0 0 10px}.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+    label{font-size:13px;color:var(--muted)} input,select,button{font:inherit} input[type="number"]{width:90px} input[type="range"]{width:100%;accent-color:var(--accent)}
+    button{border:1px solid var(--line);background:white;border-radius:8px;padding:7px 10px;cursor:pointer} button.primary{background:var(--accent);color:white;border-color:var(--accent)} button.danger{color:#b00020} button.good{color:var(--good);border-color:#9fd6b3;background:#f4fbf6}
+    button:disabled{opacity:.45;cursor:not-allowed}.hint{font-size:12px;color:var(--muted);line-height:1.5}.warn{color:var(--warn)}.goodText{color:var(--good)}
+    .stageWrap{position:relative;width:100%;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#111;}
+    canvas#stage{display:block;width:100%;height:auto;cursor:crosshair}.overlayText{position:absolute;left:8px;top:8px;color:white;background:#0008;border-radius:6px;padding:4px 6px;font-size:12px}
+    .seekLabels{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:-4px}
+    .pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;background:#f8faff;font-size:12px;color:var(--muted)}
+    table{border-collapse:collapse;width:100%;font-size:12px} th,td{border:1px solid var(--line);padding:4px 6px;text-align:right} th{background:#eef2fb} td:first-child,th:first-child{text-align:center}
+    .tableWrap{max-height:520px;overflow:auto}.wide{grid-column:1/-1}
+    @media(max-width:900px){main{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>物理動画解析ミニアプリ</h1>
+  <p>自由落下・斜方投射用。動画は端末内で処理され、サーバーには送信されません。</p>
+</header>
+<main>
+  <section>
+    <h2>1. 動画と測定</h2>
+    <div class="row"><input id="file" type="file" accept="video/*"><span class="hint">Chromebookで撮影した動画を選択</span></div>
+    <div class="stageWrap"><canvas id="stage" width="960" height="540"></canvas><div id="overlay" class="overlayText">動画を読み込んでください</div></div>
+    <video id="video" playsinline style="display:none"></video>
+
+    <div class="row" style="display:block">
+      <input id="seek" type="range" min="0" max="0" value="0" step="0.001" disabled>
+      <div class="seekLabels"><span id="currentTimeLabel">0.000 s</span><span id="durationLabel">0.000 s</span></div>
+    </div>
+
+    <div class="row">
+      <button id="prev">◀ 少し戻る</button><button id="play">再生</button><button id="next">少し進む ▶</button>
+      <label>移動秒 <input id="dtFrame" type="number" value="0.033" step="0.001" min="0.001"></label>
+      <label><input id="autoAdvance" type="checkbox"> 記録後に自動で進む</label>
+      <label>送り幅 <select id="advanceSteps"><option value="1">1フレーム相当</option><option value="2">2フレーム相当</option><option value="5">5フレーム相当</option></select></label>
+      <span id="time" class="pill">t = 0.000 s</span>
+    </div>
+
+    <div class="row">
+      <button id="markStart" class="good">ここから計測スタート</button>
+      <button id="markEnd" class="good">ここで計測終わり</button>
+      <button id="goStart">開始位置へ</button>
+      <button id="goEnd">終了位置へ</button>
+    </div>
+    <div class="row">
+      <span id="rangeInfo" class="hint">計測区間：未設定</span>
+    </div>
+
+    <div class="row">
+      <label>モード <select id="mode"><option value="projectile">斜方投射モード</option><option value="fall">自由落下モード</option></select></label>
+      <button id="setOrigin">原点を設定</button><button id="setScale">スケールを設定</button><button id="record" class="primary">物体の位置を記録</button>
+      <button id="undo">1つ戻す</button><button id="clear" class="danger">全消去</button>
+    </div>
+    <div class="row">
+      <label>基準長さ[m] <input id="knownLength" type="number" value="1.00" step="0.01" min="0.001"></label>
+      <span id="status" class="hint warn"></span>
+    </div>
+    <p id="modeHint" class="hint"></p>
+    <p class="hint">使い方：①動画を開く → ②シークバーで開始場面を探して「ここから計測スタート」 → ③終了場面で「ここで計測終わり」 → ④基準長さと原点を設定 → ⑤物体中心をクリックして記録。</p>
+  </section>
+
+  <section>
+    <h2>2. 測定データ</h2>
+    <div class="row"><button id="downloadCsv">CSV保存</button><button id="copyCsv">CSVコピー</button><span id="summary" class="small"></span></div>
+    <div class="tableWrap"><table id="dataTable"><thead><tr><th>No.</th><th>t[s]</th><th>x[m]</th><th>y[m]</th></tr></thead><tbody></tbody></table></div>
+    <p class="hint">表示・保存するデータは t, x, y のみです。速度や加速度、グラフはこのデータを使って生徒が作成・読み取りを行う想定です。</p>
+  </section>
+
+  <section class="wide">
+    <h2>3. 記録時の注意</h2>
+    <p class="hint">計測スタートを設定すると、その時刻を t=0 として記録します。計測終わりを設定した場合、その後の時刻では記録できないようにしています。開始・終了はあとから何度でも設定し直せます。</p>
+  </section>
+</main>
+<script>
+const video=document.getElementById('video'), stage=document.getElementById('stage'), ctx=stage.getContext('2d');
+const file=document.getElementById('file'), overlay=document.getElementById('overlay'), statusEl=document.getElementById('status');
+let points=[], origin=null, scalePxPerM=null, t0=0, tEnd=null, action='record', scaleClicks=[], seekingBySlider=false;
+function $(id){return document.getElementById(id)}
+function fmt(v){return Number.isFinite(v)?v.toFixed(3):'0.000'}
+function draw(){
+  ctx.clearRect(0,0,stage.width,stage.height);
+  if(video.readyState>=2){ ctx.drawImage(video,0,0,stage.width,stage.height); }
+  else { ctx.fillStyle='#111'; ctx.fillRect(0,0,stage.width,stage.height); }
+  if(origin){
+    ctx.strokeStyle='yellow'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(origin.x-12,origin.y); ctx.lineTo(origin.x+12,origin.y); ctx.moveTo(origin.x,origin.y-12); ctx.lineTo(origin.x,origin.y+12); ctx.stroke();
+    ctx.setLineDash([6,6]); ctx.strokeStyle='rgba(255,255,0,.55)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,origin.y); ctx.lineTo(stage.width,origin.y); ctx.moveTo(origin.x,0); ctx.lineTo(origin.x,stage.height); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if(scaleClicks.length){ ctx.fillStyle='cyan'; scaleClicks.forEach(p=>{ctx.beginPath();ctx.arc(p.x,p.y,6,0,Math.PI*2);ctx.fill();}); }
+  if(points.length>1){
+    ctx.strokeStyle='rgba(255,70,70,.9)'; ctx.lineWidth=2; ctx.beginPath();
+    points.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.px,p.py); else ctx.lineTo(p.px,p.py); });
+    ctx.stroke();
+  }
+  points.forEach((p,i)=>{
+    ctx.fillStyle='red'; ctx.beginPath();ctx.arc(p.px,p.py,5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='white'; ctx.font='14px system-ui'; ctx.strokeStyle='black'; ctx.lineWidth=3;
+    ctx.strokeText(String(i+1),p.px+7,p.py-7); ctx.fillText(String(i+1),p.px+7,p.py-7);
+  });
+  $('time').textContent=`t = ${fmt(video.currentTime-t0)} s`;
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+function updateSeek(){
+  if(video.duration && !seekingBySlider){$('seek').value=video.currentTime;}
+  $('currentTimeLabel').textContent=`現在 ${fmt(video.currentTime)} s`;
+  $('durationLabel').textContent=`全体 ${fmt(video.duration||0)} s`;
+}
+setInterval(updateSeek,100);
+file.addEventListener('change',()=>{ const f=file.files[0]; if(!f)return; video.src=URL.createObjectURL(f); points=[]; origin=null; scalePxPerM=null; scaleClicks=[]; t0=0; tEnd=null; updateAll(); video.onloadedmetadata=()=>{overlay.textContent=`${f.name} / ${video.videoWidth}×${video.videoHeight}`; stage.width=video.videoWidth; stage.height=video.videoHeight; $('seek').disabled=false; $('seek').max=video.duration||0; $('seek').value=0; updateRangeInfo();};});
+$('seek').addEventListener('input',()=>{seekingBySlider=true; video.pause(); video.currentTime=Number($('seek').value);});
+$('seek').addEventListener('change',()=>{seekingBySlider=false;});
+$('play').onclick=()=>{ if(video.paused){video.play(); $('play').textContent='停止';} else {video.pause(); $('play').textContent='再生';} };
+video.addEventListener('pause',()=>{$('play').textContent='再生'}); video.addEventListener('play',()=>{$('play').textContent='停止'});
+$('prev').onclick=()=>{ video.pause(); video.currentTime=Math.max(0,video.currentTime-Number($('dtFrame').value||0.033)); };
+$('next').onclick=()=>{ video.pause(); video.currentTime=Math.min(video.duration||999,video.currentTime+Number($('dtFrame').value||0.033)); };
+function updateRangeInfo(){
+  const s=`開始 ${fmt(t0)} s`; const e=tEnd===null?'終了 未設定':`終了 ${fmt(tEnd)} s`; $('rangeInfo').innerHTML=`計測区間：<span class="goodText">${s}</span> / <span class="goodText">${e}</span>`;
+}
+$('markStart').onclick=()=>{t0=video.currentTime; points=points.filter(p=>p.rawTime>=t0 && (tEnd===null || p.rawTime<=tEnd)); statusEl.textContent='計測スタートを設定しました。この時刻を t=0 とします。'; updateRangeInfo(); updateAll();};
+$('markEnd').onclick=()=>{tEnd=video.currentTime; if(tEnd<t0){const old=t0; t0=tEnd; tEnd=old;} points=points.filter(p=>p.rawTime>=t0 && p.rawTime<=tEnd); statusEl.textContent='計測終わりを設定しました。'; updateRangeInfo(); updateAll();};
+$('goStart').onclick=()=>{video.pause(); video.currentTime=t0;};
+$('goEnd').onclick=()=>{if(tEnd!==null){video.pause(); video.currentTime=tEnd;}};
+$('setOrigin').onclick=()=>{action='origin'; statusEl.textContent='原点にしたい位置をクリックしてください。';};
+$('setScale').onclick=()=>{action='scale'; scaleClicks=[]; statusEl.textContent='基準長さの両端を2回クリックしてください。';};
+$('record').onclick=()=>{action='record'; statusEl.textContent='物体の中心をクリックして記録します。';};
+stage.addEventListener('click',ev=>{ const r=stage.getBoundingClientRect(); const x=(ev.clientX-r.left)*stage.width/r.width, y=(ev.clientY-r.top)*stage.height/r.height;
+  if(action==='origin'){origin={x,y}; action='record'; statusEl.textContent='原点を設定しました。'; updateAll(); return;}
+  if(action==='scale'){scaleClicks.push({x,y}); if(scaleClicks.length===2){ const dx=scaleClicks[0].x-scaleClicks[1].x, dy=scaleClicks[0].y-scaleClicks[1].y; scalePxPerM=Math.hypot(dx,dy)/Number($('knownLength').value||1); action='record'; statusEl.textContent=`スケール設定：${scalePxPerM.toFixed(1)} px/m`; updateAll();} return;}
+  if(!origin||!scalePxPerM){statusEl.textContent='先にスケールと原点を設定してください。'; return;}
+  const rawTime=video.currentTime;
+  if(rawTime<t0){statusEl.textContent='計測スタートより前です。開始位置へ移動してから記録してください。'; return;}
+  if(tEnd!==null && rawTime>tEnd){statusEl.textContent='計測終わりより後です。終了時刻より前で記録してください。'; return;}
+  const t=rawTime-t0; const xm=(x-origin.x)/scalePxPerM; const ym=-(y-origin.y)/scalePxPerM;
+  points.push({rawTime,t,px:x,py:y,x:xm,y:ym}); points.sort((a,b)=>a.rawTime-b.rawTime); updateAll();
+  if($('autoAdvance').checked){
+    const step=Number($('dtFrame').value||0.033)*Number($('advanceSteps').value||1);
+    const nextTime=Math.min(video.duration||999, tEnd!==null?tEnd:999, rawTime+step);
+    video.pause(); video.currentTime=nextTime;
+  }
+});
+$('undo').onclick=()=>{points.pop();updateAll();}; $('clear').onclick=()=>{points=[];updateAll();};
+function updateAll(){ const tb=$('dataTable').querySelector('tbody'); tb.innerHTML=''; points.forEach((p,i)=>{p.t=p.rawTime-t0; tb.insertAdjacentHTML('beforeend',`<tr><td>${i+1}</td><td>${p.t.toFixed(3)}</td><td>${p.x.toFixed(3)}</td><td>${p.y.toFixed(3)}</td></tr>`)}); $('summary').textContent=`記録点：${points.length}`; }
+function csv(){return ['No,t[s],x[m],y[m]',...points.map((p,i)=>[i+1,(p.rawTime-t0).toFixed(5),p.x.toFixed(5),p.y.toFixed(5)].join(','))].join('\n');}
+$('downloadCsv').onclick=()=>{const blob=new Blob([csv()],{type:'text/csv'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='physics_video_data_txy.csv'; a.click();};
+$('copyCsv').onclick=async()=>{await navigator.clipboard.writeText(csv()); statusEl.textContent='CSVをコピーしました。';};
+function updateModeHint(){
+  const mode=$('mode').value;
+  if(mode==='fall'){
+    $('modeHint').innerHTML='<b>自由落下モード：</b>横方向のずれは小さい前提で、主に <b>t-y</b> の関係を調べます。点の軌跡と番号を表示し、表には t, x, y を残します。';
+  }else{
+    $('modeHint').innerHTML='<b>斜方投射モード：</b>水平方向と鉛直方向を分けて考えるため、<b>t-x</b> と <b>t-y</b> を両方使えるように t, x, y を記録します。軌跡が放物線状に見えるか確認できます。';
+  }
+}
+$('mode').addEventListener('change',updateModeHint);
+updateRangeInfo(); updateAll(); updateModeHint();
+</script>
+</body>
+</html>
